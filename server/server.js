@@ -1,31 +1,69 @@
 require('dotenv').config(); 
 const fs = require('fs');
 const express = require('express');
-const { GoogleGenAI } = require('@google/genai');
+const { GoogleGenerativeAI } = require('@google/generative-ai'); // Fixed import
 const mongoose = require('mongoose');
 const multer = require('multer');
 const path = require('path');
-const axios = require('axios'); // For making API calls to an AI service
+const axios = require('axios');
 const { spawn } = require('child_process');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Connect to MongoDB
+// Middleware to parse JSON
+app.use(express.json());
+
+// Connect to MongoDB with better error handling
 mongoose.connect('mongodb://localhost:27017/resumeBuilderDB')
   .then(() => console.log('MongoDB connected'))
-  .catch(err => console.error(err));
+  .catch(err => console.error('MongoDB connection error:', err));
 
-  // --- Google Gemini API Setup ---
+// --- Google Gemini API Setup ---
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY; 
-const genAI = new GoogleGenAI(GEMINI_API_KEY);
+if (!GEMINI_API_KEY) {
+  console.warn('Warning: GEMINI_API_KEY not found in environment variables');
+}
+const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 
-  // Multer setup for file uploads
-const upload = multer({ dest: 'uploads/' });
+// Create uploads directory if it doesn't exist
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+  console.log('Created uploads directory');
+}
 
-// Serve static files from the 'public' directory
-app.use(express.static(path.join(__dirname, '..', 'public')));
-app.use(express.json()); // Middleware to parse JSON bodies
+// Enhanced multer setup with better error handling
+const upload = multer({ 
+  dest: uploadsDir,
+  limits: {
+    fileSize: 20 * 1024 * 1024 // 10MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    // Check file types
+    const allowedTypes = ['.pdf', '.docx', '.doc'];
+    const fileExt = path.extname(file.originalname).toLowerCase();
+    
+    if (allowedTypes.includes(fileExt)) {
+      cb(null, true);
+    } else {
+      cb(new Error(`Invalid file type. Only ${allowedTypes.join(', ')} files are allowed.`));
+    }
+  }
+});
+
+// Serve static files - fix the path
+app.use(express.static(__dirname)); // Serve from current directory
+app.use(express.json({ limit: '10mb' })); // Increased limit
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Add CORS headers for development
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  next();
+});
 
 // --- Mongoose Schema ---
 const resumeSchema = new mongoose.Schema({
@@ -35,107 +73,213 @@ const resumeSchema = new mongoose.Schema({
   summary: String,
   workExperience: Array,
   education: Array,
-  skills: Array
+  skills: Array,
+  createdAt: { type: Date, default: Date.now }
 });
 const Resume = mongoose.model('Resume', resumeSchema);
 
 // --- API Routes ---
 
-// Route to handle file upload and parsing
-app.post('/api/upload-resume', upload.single('resumeFile'), (req, res) => {
-    if (!req.file) {
-        return res.status(400).send('No file uploaded.');
-    }
+// Route to handle file upload and parsing with enhanced error handling
+app.post('/api/upload-resume', (req, res) => {
+    console.log(req.body);
+  console.log('Upload endpoint hit');
+  
+    // Use multer middleware
+    upload.single('resumeFile')(req, res, (err) => {
+        if (err) {
+        console.error('Multer error:', err.message);
+        if (err instanceof multer.MulterError) {
+            if (err.code === 'LIMIT_FILE_SIZE') {
+            return res.status(400).json({ error: 'File too large. Maximum size is 10MB.' });
+            }
+        }
+        return res.status(400).json({ error: err.message });
+        }
 
-    const filePath = req.file.path;
+        if (!req.file) {
+        console.error('No file received');
+        return res.status(400).json({ error: 'No file uploaded.' });
+        }
 
-    const pythonProcess = spawn('python', ['parser.py', filePath]);
+        console.log('File received:', req.file.originalname, req.file.size, 'bytes');
+        const filePath = req.file.path;
 
-    let dataString = '';
-    let errorString = '';
+    // Check if Python is available
+        const pythonCommand = process.platform === 'win32' ? 'python' : 'python3';
+        const pythonProcess = spawn(pythonCommand, ['parser.py', filePath]);
 
-    pythonProcess.stdout.on('data', (data) => {
+        let dataString = '';
+        let errorString = '';
+
+        pythonProcess.stdout.on('data', (data) => {
         dataString += data.toString();
-    });
+        });
 
-    pythonProcess.stderr.on('data', (data) => {
+        pythonProcess.stderr.on('data', (data) => {
         errorString += data.toString();
         console.error(`Python stderr: ${data}`);
     });
 
-    pythonProcess.on('close', (code) => {
-        // Always delete the uploaded file after processing
-        fs.unlink(filePath, (err) => {
-            if (err) console.error('Error deleting temp file:', err);
-        });
-
-        if (code !== 0) {
-            console.error(`Python script exited with code ${code}. Error: ${errorString}`);
-            return res.status(500).send(`Parsing failed: ${errorString || 'Unknown error.'}`);
-        }
-
-        try {
-            const extractedData = JSON.parse(dataString);
-            res.json({ success: true, data: extractedData });
-        } catch (error) {
-            console.error('Failed to parse JSON from Python script:', error);
-            res.status(500).send('Invalid data received from parser.');
-        }
+    pythonProcess.on('error', (error) => {
+      console.error('Failed to start Python process:', error);
+      // Clean up file
+      fs.unlink(filePath, (unlinkErr) => {
+        if (unlinkErr) console.error('Error deleting temp file:', unlinkErr);
+      });
+      res.status(500).json({ error: 'Python interpreter not found. Please ensure Python is installed.' });
     });
+
+    pythonProcess.on('close', (code) => {
+      console.log(`Python process exited with code: ${code}`);
+      
+      // Always delete the uploaded file after processing
+      fs.unlink(filePath, (unlinkErr) => {
+        if (unlinkErr) console.error('Error deleting temp file:', unlinkErr);
+        else console.log('Temporary file deleted:', filePath);
+      });
+
+      if (code !== 0) {
+        console.error(`Python script failed with code ${code}. Error: ${errorString}`);
+        return res.status(500).json({ 
+          error: `Parsing failed: ${errorString || 'Unknown error from parser.'}`,
+          details: `Exit code: ${code}`
+        });
+      }
+
+      if (!dataString.trim()) {
+        console.error('No data received from Python script');
+        return res.status(500).json({ error: 'No data received from parser.' });
+      }
+
+      try {
+        console.log('Raw Python output:', dataString);
+        const extractedData = JSON.parse(dataString);
+        console.log('Parsed data:', extractedData);
+        
+        // Check if there's an error in the extracted data
+        if (extractedData.error) {
+          return res.status(500).json({ error: extractedData.error });
+        }
+        
+        res.json({ success: true, data: extractedData });
+      } catch (parseError) {
+        console.error('Failed to parse JSON from Python script:', parseError);
+        console.error('Raw output was:', dataString);
+        res.status(500).json({ 
+          error: 'Invalid data received from parser.',
+          details: parseError.message,
+          rawOutput: dataString.substring(0, 500) // First 500 chars for debugging
+        });
+      }
+    });
+
+    // Set a timeout for the Python process
+    setTimeout(() => {
+      if (!pythonProcess.killed) {
+        pythonProcess.kill();
+        console.log('Python process timed out and was killed');
+        res.status(500).json({ error: 'Parser timed out. Please try with a smaller file.' });
+      }
+    }, 30000); // 30 second timeout
+  });
 });
 
-
-// Route to generate AI content (e.g., a summary)
+// Route to generate AI content with better error handling
 app.post('/api/generate-content', async (req, res) => {
-    const { userCareerInfo, jobDescription } = req.body;
+  const { userCareerInfo, jobDescription, jobTitle, experience } = req.body;
 
-    // A prompt to ask the LLM to generate a professional summary
-    const summaryPrompt = `Based on the following career information, write a professional resume summary: ${userCareerInfo}`;
+  if (!GEMINI_API_KEY) {
+    return res.status(500).json({ error: 'AI service not configured. Please set GEMINI_API_KEY.' });
+  }
+
+  // Use jobTitle and experience if userCareerInfo is not provided (backward compatibility)
+  const careerInfo = userCareerInfo || `Job Title: ${jobTitle}, Experience: ${experience}`;
+
+  const summaryPrompt = `Based on the following career information, write a professional resume summary in 2-3 sentences: ${careerInfo}`;
+  
+  try {
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" }); // Updated model name
     
-    // A prompt for keyword optimization
-    const keywordPrompt = `Given this job description: "${jobDescription}", and this resume text: "${userCareerInfo}". What are 5 key skills or keywords I should add to my resume to better match the job? List them only.`;
+    console.log('Generating AI content for:', careerInfo.substring(0, 100) + '...');
     
-    // A prompt for job matching analysis
-    const matchingPrompt = `Analyze how well this resume matches the following job description. Provide a brief analysis and a percentage match score. Resume: "${userCareerInfo}". Job Description: "${jobDescription}"`;
+    // Generate a professional summary
+    const summaryResult = await model.generateContent(summaryPrompt);
+    const summary = summaryResult.response.text();
 
-    try {
-        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" }); // Use the appropriate Gemini model
-        
-        // Generate a professional summary
-        const summaryResult = await model.generateContent(summaryPrompt);
-        const summary = summaryResult.response.text;
-        
-        // Optimize keywords
-        const keywordsResult = await model.generateContent(keywordPrompt);
-        const keywords = keywordsResult.response.text;
-        
-        // Perform job matching analysis
-        const matchingResult = await model.generateContent(matchingPrompt);
-        const matchingAnalysis = matchingResult.response.text;
+    let keywords = '';
+    let matchingAnalysis = '';
 
-        res.json({
-            success: true,
-            summary: summary,
-            keywords: keywords,
-            matchingAnalysis: matchingAnalysis
-        });
-    } catch (error) {
-        console.error('AI API Error:', error);
-        res.status(500).send('Failed to generate content from AI.');
+    // Only generate additional content if job description is provided
+    if (jobDescription && jobDescription.trim()) {
+      const keywordPrompt = `Given this job description: "${jobDescription}", and this resume text: "${careerInfo}". What are 5 key skills or keywords I should add to my resume to better match the job? List them as a comma-separated list.`;
+      const matchingPrompt = `Analyze how well this resume matches the following job description. Provide a brief analysis and a percentage match score. Resume: "${careerInfo}". Job Description: "${jobDescription}"`;
+      
+      const keywordsResult = await model.generateContent(keywordPrompt);
+      keywords = keywordsResult.response.text();
+      
+      const matchingResult = await model.generateContent(matchingPrompt);
+      matchingAnalysis = matchingResult.response.text();
     }
+
+    res.json({
+      success: true,
+      content: summary, // For backward compatibility
+      summary: summary,
+      keywords: keywords,
+      matchingAnalysis: matchingAnalysis
+    });
+  } catch (error) {
+    console.error('AI API Error:', error);
+    res.status(500).json({ 
+      error: 'Failed to generate content from AI.',
+      details: error.message 
+    });
+  }
 });
 
 // Route to save the resume
 app.post('/api/save-resume', async (req, res) => {
   try {
+    console.log('Saving resume:', req.body);
     const newResume = new Resume(req.body);
-    await newResume.save();
-    res.status(201).json({ message: 'Resume saved successfully!' });
+    const savedResume = await newResume.save();
+    res.status(201).json({ 
+      message: 'Resume saved successfully!', 
+      id: savedResume._id 
+    });
   } catch (error) {
-    res.status(500).json({ message: 'Failed to save resume.', error: error.message });
+    console.error('Save resume error:', error);
+    res.status(500).json({ 
+      message: 'Failed to save resume.', 
+      error: error.message 
+    });
   }
+});
+
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'OK', 
+    timestamp: new Date().toISOString(),
+    uploadsDir: uploadsDir,
+    uploadsDirExists: fs.existsSync(uploadsDir)
+  });
+});
+
+// Error handling middleware
+app.use((error, req, res, next) => {
+  console.error('Unhandled error:', error);
+  res.status(500).json({ error: 'Internal server error', details: error.message });
+});
+
+// Serve the main HTML file for any non-API routes
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 app.listen(PORT, () => {
   console.log(`Server is running on http://localhost:${PORT}`);
+  console.log(`Uploads directory: ${uploadsDir}`);
+  console.log(`Uploads directory exists: ${fs.existsSync(uploadsDir)}`);
 });
