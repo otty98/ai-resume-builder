@@ -1,7 +1,7 @@
 require('dotenv').config(); 
 const fs = require('fs');
 const express = require('express');
-const { GoogleGenerativeAI } = require('@google/generative-ai'); // Fixed import
+const { GoogleGenerativeAI } = require('@google/generative-ai'); 
 const mongoose = require('mongoose');
 const multer = require('multer');
 const path = require('path');
@@ -33,11 +33,25 @@ if (!fs.existsSync(uploadsDir)) {
   console.log('Created uploads directory');
 }
 
-// Enhanced multer setup with better error handling
+// =========================================================
+// Fix: Use multer.diskStorage to preserve the file extension
+// =========================================================
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, uploadsDir);
+    },
+    filename: (req, file, cb) => {
+        // Use a unique name + the original file extension
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        const fileExt = path.extname(file.originalname);
+        cb(null, file.fieldname + '-' + uniqueSuffix + fileExt);
+    }
+});
+
 const upload = multer({ 
-  dest: uploadsDir,
+  storage: storage,
   limits: {
-    fileSize: 20 * 1024 * 1024 // 10MB limit
+    fileSize: 20 * 1024 * 1024 // 20MB limit
   },
   fileFilter: (req, file, cb) => {
     // Check file types
@@ -53,7 +67,7 @@ const upload = multer({
 });
 
 // Serve static files - fix the path
-app.use(express.static(__dirname)); // Serve from current directory
+app.use(express.static(path.join(__dirname, '..', 'public')));
 app.use(express.json({ limit: '10mb' })); // Increased limit
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
@@ -82,108 +96,119 @@ const Resume = mongoose.model('Resume', resumeSchema);
 
 // Route to handle file upload and parsing with enhanced error handling
 app.post('/api/upload-resume', (req, res) => {
-    console.log(req.body);
-  console.log('Upload endpoint hit');
-  
+    console.log('Upload endpoint hit');
+
     // Use multer middleware
     upload.single('resumeFile')(req, res, (err) => {
         if (err) {
-        console.error('Multer error:', err.message);
-        if (err instanceof multer.MulterError) {
-            if (err.code === 'LIMIT_FILE_SIZE') {
-            return res.status(400).json({ error: 'File too large. Maximum size is 10MB.' });
+            console.error('Multer error:', err.message);
+            if (err instanceof multer.MulterError) {
+                if (err.code === 'LIMIT_FILE_SIZE') {
+                    return res.status(400).json({ error: 'File too large. Maximum size is 10MB.' });
+                }
             }
-        }
-        return res.status(400).json({ error: err.message });
+            return res.status(400).json({ error: err.message });
         }
 
         if (!req.file) {
-        console.error('No file received');
-        return res.status(400).json({ error: 'No file uploaded.' });
+            console.error('No file received');
+            return res.status(400).json({ error: 'No file uploaded.' });
         }
 
         console.log('File received:', req.file.originalname, req.file.size, 'bytes');
         const filePath = req.file.path;
 
-    // Check if Python is available
+        // Check if Python is available
         const pythonCommand = process.platform === 'win32' ? 'python' : 'python3';
-        const pythonProcess = spawn(pythonCommand, ['parser.py', filePath]);
+        const pythonProcess = spawn(pythonCommand, [path.join(__dirname, 'parser.py'), filePath]);
 
         let dataString = '';
         let errorString = '';
 
         pythonProcess.stdout.on('data', (data) => {
-        dataString += data.toString();
+            dataString += data.toString();
         });
 
         pythonProcess.stderr.on('data', (data) => {
-        errorString += data.toString();
-        console.error(`Python stderr: ${data}`);
-    });
-
-    pythonProcess.on('error', (error) => {
-      console.error('Failed to start Python process:', error);
-      // Clean up file
-      fs.unlink(filePath, (unlinkErr) => {
-        if (unlinkErr) console.error('Error deleting temp file:', unlinkErr);
-      });
-      res.status(500).json({ error: 'Python interpreter not found. Please ensure Python is installed.' });
-    });
-
-    pythonProcess.on('close', (code) => {
-      console.log(`Python process exited with code: ${code}`);
-      
-      // Always delete the uploaded file after processing
-      fs.unlink(filePath, (unlinkErr) => {
-        if (unlinkErr) console.error('Error deleting temp file:', unlinkErr);
-        else console.log('Temporary file deleted:', filePath);
-      });
-
-      if (code !== 0) {
-        console.error(`Python script failed with code ${code}. Error: ${errorString}`);
-        return res.status(500).json({ 
-          error: `Parsing failed: ${errorString || 'Unknown error from parser.'}`,
-          details: `Exit code: ${code}`
+            errorString += data.toString();
+            console.error(`Python stderr: ${data}`);
         });
-      }
 
-      if (!dataString.trim()) {
-        console.error('No data received from Python script');
-        return res.status(500).json({ error: 'No data received from parser.' });
-      }
-
-      try {
-        console.log('Raw Python output:', dataString);
-        const extractedData = JSON.parse(dataString);
-        console.log('Parsed data:', extractedData);
-        
-        // Check if there's an error in the extracted data
-        if (extractedData.error) {
-          return res.status(500).json({ error: extractedData.error });
-        }
-        
-        res.json({ success: true, data: extractedData });
-      } catch (parseError) {
-        console.error('Failed to parse JSON from Python script:', parseError);
-        console.error('Raw output was:', dataString);
-        res.status(500).json({ 
-          error: 'Invalid data received from parser.',
-          details: parseError.message,
-          rawOutput: dataString.substring(0, 500) // First 500 chars for debugging
+        pythonProcess.on('error', (error) => {
+            console.error('Failed to start Python process:', error);
+            cleanupFile(filePath);
+            if (!res.headersSent) {
+                res.status(500).json({ error: 'Python interpreter not found. Please ensure Python is installed.' });
+            }
         });
-      }
-    });
 
-    // Set a timeout for the Python process
-    setTimeout(() => {
-      if (!pythonProcess.killed) {
-        pythonProcess.kill();
-        console.log('Python process timed out and was killed');
-        res.status(500).json({ error: 'Parser timed out. Please try with a smaller file.' });
-      }
-    }, 30000); // 30 second timeout
-  });
+        // Set a timeout for the Python process
+        const timeoutId = setTimeout(() => {
+            if (!pythonProcess.killed) {
+                pythonProcess.kill();
+                console.log('Python process timed out and was killed');
+                if (!res.headersSent) {
+                    res.status(500).json({ error: 'Parser timed out. Please try with a smaller file.' });
+                }
+            }
+        }, 30000); // 30 seconds
+
+        pythonProcess.on('close', (code) => {
+            clearTimeout(timeoutId); // ✅ Prevent timeout firing after close
+            console.log(`Python process exited with code: ${code}`);
+            cleanupFile(filePath);
+
+            if (res.headersSent) return; // ✅ Prevent double response
+
+            if (code !== 0) {
+                console.error(`Python script failed with code ${code}. Error: ${errorString}`);
+                return res.status(500).json({
+                    success: false,
+                    error: `Parsing failed: ${errorString || 'Unknown error from parser.'}`,
+                    details: `Exit code: ${code}`
+                });
+            }
+
+            if (!dataString.trim()) {
+                console.error('No data received from Python script');
+                return res.status(500).json({ success: false, error: 'No data received from parser.' });
+            }
+
+            try {
+                console.log('Raw Python output:', dataString);
+                const extractedData = JSON.parse(dataString);
+                console.log('Parsed data:', extractedData);
+
+                if (extractedData.error) {
+                    return res.status(500).json({ success: false, error: extractedData.error });
+                }
+
+                res.json({ success: true, data: extractedData });
+            } catch (parseError) {
+                console.error('Failed to parse JSON from Python script:', parseError);
+                console.error('Raw output was:', dataString);
+                res.status(500).json({
+                    success: false,
+                    error: 'Invalid data received from parser.',
+                    details: parseError.message,
+                    rawOutput: dataString.substring(0, 500)
+                });
+            }
+        });
+    });
 });
+
+// Helper function to delete temp file
+function cleanupFile(filePath) {
+    fs.unlink(filePath, (unlinkErr) => {
+        if (unlinkErr) {
+            console.error('Error deleting temp file:', unlinkErr);
+        } else {
+            console.log('Temporary file deleted:', filePath);
+        }
+    });
+}
+
 
 // Route to generate AI content with better error handling
 app.post('/api/generate-content', async (req, res) => {

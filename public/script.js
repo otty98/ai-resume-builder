@@ -1,40 +1,39 @@
-async function uploadResume(formData) {
-  try {
-    const response = await fetch('http://localhost:5500/api/upload-resume', {
-      method: 'POST', // Must match backend
-      body: formData,
-    });
-    const data = await response.json();
-    console.log(data);
-  } catch (error) {
-    console.error('Network error:', error);
-  }
-}
-
 // Function to render the live resume preview
 function renderResumePreview(data) {
     const previewDiv = document.getElementById('resume-preview');
+    
+    // Process skills
+    const skillsList = Array.isArray(data.skills) ? data.skills.join(', ') : data.skills || '';
+    
+    // Process work experience
     let workExpHTML = '';
-    let educationHTML = '';
-
-    if (data.workExperience || data.experience) {
-        const workData = data.workExperience || data.experience || [];
-        workExpHTML = workData.map(exp => `
+    if (data.workExperience && Array.isArray(data.workExperience)) {
+        workExpHTML = data.workExperience.map(exp => `
             <li>
-                <strong>${exp.title || exp.job_title || 'Position'}</strong> at <strong>${exp.company || exp.organization || 'Company'}</strong>
-                <p>${exp.description || exp.details || ''}</p>
+                <strong>${exp.title || 'Position'}</strong> at <strong>${exp.company || 'Company'}</strong>
+                <p>${exp.description || ''}</p>
             </li>
         `).join('');
+    } else if (data.experience && Array.isArray(data.experience)) {
+        workExpHTML = data.experience.map(exp => `<li>${exp}</li>`).join('');
     }
-
-    if (data.education) {
+    
+    // Process education
+    let educationHTML = '';
+    if (data.education && Array.isArray(data.education)) {
         educationHTML = data.education.map(edu => `
             <li>
-                <strong>${edu.degree || edu.qualification || 'Degree'}</strong> from <strong>${edu.institution || edu.school || edu.university || 'Institution'}</strong>
+                <strong>${edu.degree || 'Degree'}</strong> from <strong>${edu.institution || 'Institution'}</strong>
             </li>
         `).join('');
+    } else if (data.degree || data.college_name) {
+        educationHTML = `
+            <li>
+                <strong>${data.degree || 'Degree Not Found'}</strong> from <strong>${data.college_name || 'Institution Not Found'}</strong>
+            </li>
+        `;
     }
-
+    
     previewDiv.innerHTML = `
         <div class="preview-section">
             <h3>${data.name || ''}</h3>
@@ -55,12 +54,12 @@ function renderResumePreview(data) {
         </div>
         <div class="preview-section">
             <h4>Skills</h4>
-            <p>${Array.isArray(data.skills) ? data.skills.join(', ') : data.skills || ''}</p>
+            <p>${skillsList}</p>
         </div>
     `;
 }
 
-// Function to show error messages
+// Show error
 function showError(message, element = null) {
     const errorDiv = document.createElement('div');
     errorDiv.className = 'error-message';
@@ -75,9 +74,7 @@ function showError(message, element = null) {
     `;
     errorDiv.textContent = message;
     
-    // Remove any existing error messages
-    const existingErrors = document.querySelectorAll('.error-message');
-    existingErrors.forEach(err => err.remove());
+    document.querySelectorAll('.error-message').forEach(err => err.remove());
     
     if (element) {
         element.appendChild(errorDiv);
@@ -85,15 +82,10 @@ function showError(message, element = null) {
         document.querySelector('.container').prepend(errorDiv);
     }
     
-    // Auto-remove after 5 seconds
-    setTimeout(() => {
-        if (errorDiv.parentNode) {
-            errorDiv.remove();
-        }
-    }, 5000);
+    setTimeout(() => errorDiv.remove(), 5000);
 }
 
-// Function to show success messages
+// Show success
 function showSuccess(message) {
     const successDiv = document.createElement('div');
     successDiv.className = 'success-message';
@@ -108,21 +100,14 @@ function showSuccess(message) {
     `;
     successDiv.textContent = message;
     
-    // Remove any existing success messages
-    const existingMessages = document.querySelectorAll('.success-message');
-    existingMessages.forEach(msg => msg.remove());
+    document.querySelectorAll('.success-message').forEach(msg => msg.remove());
     
     document.querySelector('.container').prepend(successDiv);
     
-    // Auto-remove after 3 seconds
-    setTimeout(() => {
-        if (successDiv.parentNode) {
-            successDiv.remove();
-        }
-    }, 3000);
+    setTimeout(() => successDiv.remove(), 3000);
 }
 
-// Function to show loading state
+// Loading state
 function setLoading(element, isLoading) {
     if (isLoading) {
         element.disabled = true;
@@ -136,86 +121,80 @@ function setLoading(element, isLoading) {
     }
 }
 
-// Function to validate file before upload
+// Validate file
 function validateFile(file) {
     const allowedTypes = ['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
-    const maxSize = 10 * 1024 * 1024; // 10MB
+    const maxSize = 10 * 1024 * 1024;
     
     if (!allowedTypes.includes(file.type)) {
         return 'Please upload a PDF or Word document (.pdf, .doc, .docx)';
     }
-    
     if (file.size > maxSize) {
         return 'File size must be less than 10MB';
     }
-    
     if (file.size === 0) {
         return 'File appears to be empty';
     }
-    
-    return null; // No error
+    return null;
 }
 
-// Function to add a new work experience field
-function addWorkExperienceField() {
+// Add work experience
+function addWorkExperienceField(title = '', company = '', description = '') {
     const container = document.getElementById('work-experience-container');
     const newField = document.createElement('div');
     newField.classList.add('dynamic-field');
     newField.innerHTML = `
         <label>Job Title:</label>
-        <input type="text" name="workTitle" placeholder="e.g., Software Engineer">
+        <input type="text" name="workTitle" value="${title}">
         <label>Company:</label>
-        <input type="text" name="workCompany" placeholder="e.g., Tech Corp">
+        <input type="text" name="workCompany" value="${company}">
         <label>Description:</label>
-        <textarea name="workDescription" placeholder="Describe your responsibilities and achievements..."></textarea>
-        <button type="button" class="remove-field" onclick="removeField(this)">Remove</button>
+        <textarea name="workDescription">${description}</textarea>
+        <button type="button" class="remove-field">Remove</button> 
     `;
     container.appendChild(newField);
 }
 
-// Function to add a new education field
-function addEducationField() {
+// Add education
+function addEducationField(degree = '', institution = '') {
     const container = document.getElementById('education-container');
     const newField = document.createElement('div');
     newField.classList.add('dynamic-field');
     newField.innerHTML = `
         <label>Degree:</label>
-        <input type="text" name="eduDegree" placeholder="e.g., B.S. Computer Science">
+        <input type="text" name="eduDegree" value="${degree}">
         <label>Institution:</label>
-        <input type="text" name="eduInstitution" placeholder="e.g., University Name">
-        <button type="button" class="remove-field" onclick="removeField(this)">Remove</button>
+        <input type="text" name="eduInstitution" value="${institution}">
+        <button type="button" class="remove-field">Remove</button>
     `;
     container.appendChild(newField);
 }
 
-// Function to remove a field
-function removeField(button) {
-    button.parentElement.remove();
-}
+document.addEventListener('click', function (e) {
+    if (e.target && e.target.classList.contains('remove-field')) {
+        e.preventDefault();
+        e.target.closest('.dynamic-field').remove();
+    }
+});
 
-// Function to collect form data
+
+// Collect form data
 function collectFormData() {
     const workExperience = [];
     const education = [];
     
-    // Collect work experience
-    const workFields = document.querySelectorAll('#work-experience-container .dynamic-field');
-    workFields.forEach(field => {
+    document.querySelectorAll('#work-experience-container .dynamic-field').forEach(field => {
         const title = field.querySelector('[name="workTitle"]').value;
         const company = field.querySelector('[name="workCompany"]').value;
         const description = field.querySelector('[name="workDescription"]').value;
-        
         if (title || company || description) {
             workExperience.push({ title, company, description });
         }
     });
     
-    // Collect education
-    const eduFields = document.querySelectorAll('#education-container .dynamic-field');
-    eduFields.forEach(field => {
+    document.querySelectorAll('#education-container .dynamic-field').forEach(field => {
         const degree = field.querySelector('[name="eduDegree"]').value;
         const institution = field.querySelector('[name="eduInstitution"]').value;
-        
         if (degree || institution) {
             education.push({ degree, institution });
         }
@@ -224,6 +203,7 @@ function collectFormData() {
     return {
         name: document.getElementById('name').value,
         email: document.getElementById('email')?.value || '',
+        mobile_number: document.getElementById('phone')?.value || '',
         summary: document.getElementById('summary').value,
         skills: document.getElementById('skills').value,
         workExperience,
@@ -231,17 +211,13 @@ function collectFormData() {
     };
 }
 
-// Event listener for adding work experience fields
-document.getElementById('addWorkExpBtn').addEventListener('click', addWorkExperienceField);
-
-// Event listener for adding education fields
-document.getElementById('addEducationBtn').addEventListener('click', addEducationField);
-
-// Initial call to add one field for a better user experience
+// Button listeners
+document.getElementById('addWorkExpBtn').addEventListener('click', () => addWorkExperienceField());
+document.getElementById('addEducationBtn').addEventListener('click', () => addEducationField());
 addWorkExperienceField();
 addEducationField();
 
-// Event listener for the upload form
+// Upload form
 document.getElementById('uploadForm').addEventListener('submit', async (e) => {
     e.preventDefault();
 
@@ -266,84 +242,60 @@ document.getElementById('uploadForm').addEventListener('submit', async (e) => {
     setLoading(submitButton, true);
 
     try {
-        const response = await fetch('/api/upload-resume', {
+        const response = await fetch('http://localhost:3000/api/upload-resume', {
             method: 'POST',
             body: formData
         });
 
-        const result = await response.json();
-
-        if (response.ok && result.success) {
-            // Populate form fields
-            const data = result.data;
-            
-            document.getElementById('name').value = data.name || '';
-            document.getElementById('summary').value = data.summary || '';
-            
-            // Handle email field if it exists
-            const emailField = document.getElementById('email');
-            if (emailField) {
-                emailField.value = data.email || '';
-            }
-            
-            // Handle skills
-            const skillsValue = Array.isArray(data.skills) ? data.skills.join(', ') : (data.skills || '');
-            document.getElementById('skills').value = skillsValue;
-            
-            // Clear existing dynamic fields and populate with extracted data
-            document.getElementById('work-experience-container').innerHTML = '';
-            document.getElementById('education-container').innerHTML = '';
-            
-            // Add work experience from extracted data
-            if (data.experience && data.experience.length > 0) {
-                data.experience.forEach((exp, index) => {
-                    addWorkExperienceField();
-                    const workFields = document.querySelectorAll('#work-experience-container .dynamic-field');
-                    const lastField = workFields[workFields.length - 1];
-                    
-                    lastField.querySelector('[name="workTitle"]').value = exp.title || exp.job_title || '';
-                    lastField.querySelector('[name="workCompany"]').value = exp.company || exp.organization || '';
-                    lastField.querySelector('[name="workDescription"]').value = exp.description || exp.details || '';
-                });
-            } else {
-                addWorkExperienceField(); // Add at least one empty field
-            }
-            
-            // Add education from extracted data
-            if (data.education && data.education.length > 0) {
-                data.education.forEach((edu, index) => {
-                    addEducationField();
-                    const eduFields = document.querySelectorAll('#education-container .dynamic-field');
-                    const lastField = eduFields[eduFields.length - 1];
-                    
-                    lastField.querySelector('[name="eduDegree"]').value = edu.degree || edu.qualification || '';
-                    lastField.querySelector('[name="eduInstitution"]').value = edu.institution || edu.school || edu.university || '';
-                });
-            } else {
-                addEducationField(); // Add at least one empty field
-            }
-            
-            renderResumePreview(data);
-            showSuccess('Resume data extracted successfully!');
-        } else {
-            const errorMsg = result.error || 'Failed to upload and extract resume data.';
-            showError(errorMsg);
-            console.error('Upload error:', result);
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`HTTP error! ${response.status}: ${errorText}`);
         }
+        
+        const result = await response.json();
+        const parsedData = result.data;
+
+        document.getElementById('name').value = parsedData.name || '';
+        document.getElementById('summary').value = parsedData.summary || '';
+        
+        const emailField = document.getElementById('email');
+        if (emailField) {
+            emailField.value = parsedData.email || '';
+        }
+        
+        const skillsValue = Array.isArray(parsedData.skills) ? parsedData.skills.join(', ') : (parsedData.skills || '');
+        document.getElementById('skills').value = skillsValue;
+        
+        document.getElementById('work-experience-container').innerHTML = '';
+        if (parsedData.experience && parsedData.experience.length > 0) {
+            parsedData.experience.forEach(exp => addWorkExperienceField('', '', exp));
+        } else {
+            addWorkExperienceField();
+        }
+        
+        document.getElementById('education-container').innerHTML = '';
+        if (parsedData.degree || parsedData.college_name) {
+            addEducationField(parsedData.degree, parsedData.college_name);
+        } else {
+            addEducationField();
+        }
+        
+        renderResumePreview(parsedData);
+        showSuccess('Resume data extracted successfully!');
+        
     } catch (error) {
-        console.error('Network error:', error);
-        showError('Network error occurred. Please check your connection and try again.');
+        console.error('Network or parsing error:', error);
+        showError('An error occurred. Check console for details.');
     } finally {
         setLoading(submitButton, false);
     }
 });
 
-// Event listener for generating AI content
+// AI summary generation
 document.getElementById('generateSummaryBtn').addEventListener('click', async () => {
     const summaryTextarea = document.getElementById('summary');
     const generateButton = document.getElementById('generateSummaryBtn');
     
-    // Collect current form data to provide context
     const formData = collectFormData();
     const userCareerInfo = `
         Name: ${formData.name}
@@ -353,7 +305,7 @@ document.getElementById('generateSummaryBtn').addEventListener('click', async ()
     `.trim();
 
     if (!userCareerInfo || userCareerInfo.length < 10) {
-        showError('Please fill in some basic information (name, skills, work experience) before generating a summary.');
+        showError('Please fill in some basic information before generating a summary.');
         return;
     }
 
@@ -362,9 +314,7 @@ document.getElementById('generateSummaryBtn').addEventListener('click', async ()
     try {
         const response = await fetch('/api/generate-content', {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ userCareerInfo })
         });
         
@@ -372,27 +322,56 @@ document.getElementById('generateSummaryBtn').addEventListener('click', async ()
         
         if (response.ok && result.success) {
             summaryTextarea.value = result.summary || result.content;
-            
-            // Update the preview with the new summary
             const currentData = collectFormData();
             currentData.summary = result.summary || result.content;
             renderResumePreview(currentData);
-            
             showSuccess('AI summary generated successfully!');
         } else {
-            const errorMsg = result.error || 'Failed to generate summary.';
-            showError(errorMsg);
+            showError(result.error || 'Failed to generate summary.');
         }
     } catch (error) {
         console.error('AI generation error:', error);
-        showError('Failed to generate summary. Please try again.');
+        showError('Failed to generate summary.');
     } finally {
         setLoading(generateButton, false);
     }
 });
 
-// Event listener for form input changes to update preview
+document.getElementById('resumeForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    const saveButton = document.getElementById('saveResumeBtn');
+    setLoading(saveButton, true);
+
+    const formData = collectFormData();
+    
+    try {
+        const response = await fetch('/api/save-resume', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(formData)
+        });
+
+        const result = await response.json();
+
+        if (response.ok) {
+            showSuccess(result.message);
+            console.log('Resume saved with ID:', result.id);
+        } else {
+            showError(result.message || 'Failed to save resume.');
+        }
+
+    } catch (error) {
+        console.error('Error saving resume:', error);
+        showError('An error occurred while saving the resume. Check console for details.');
+    } finally {
+        setLoading(saveButton, false);
+    }
+});
+
+// Update preview on form change
 document.getElementById('resumeForm').addEventListener('input', () => {
-    const data = collectFormData();
-    renderResumePreview(data);
+    renderResumePreview(collectFormData());
 });
