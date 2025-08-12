@@ -19,6 +19,15 @@
         </div>
 
         <div class="card">
+            <h4>Choose a Template</h4>
+            <select id="cvTemplate">
+                <option value="modern">Modern</option>
+                <option value="classic">Classic</option>
+                <option value="professional">Professional</option>
+            </select>
+        </div>
+
+        <div class="card">
             <h2>Resume Details</h2>
             <form id="resumeForm">
                 <label for="name">Name:</label>
@@ -42,6 +51,7 @@
                 <input type="text" id="skills" name="skills" placeholder="e.g., JavaScript, Python, MongoDB">
 
                 <button type="submit" id="saveResumeBtn">Save Resume</button>
+                <button type="button" id="downloadCvBtn">Download CV</button>
             </form>
         </div>
 

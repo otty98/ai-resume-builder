@@ -4,12 +4,15 @@ const express = require('express');
 const { GoogleGenerativeAI } = require('@google/generative-ai'); 
 const mongoose = require('mongoose');
 const multer = require('multer');
-const path = require('path');
 const axios = require('axios');
 const { spawn } = require('child_process');
+const pdf = require('html-pdf');
+const path = require('path');
+
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const templatesDir = path.join(__dirname, 'templates');
 
 // Middleware to parse JSON
 app.use(express.json());
@@ -33,9 +36,6 @@ if (!fs.existsSync(uploadsDir)) {
   console.log('Created uploads directory');
 }
 
-// =========================================================
-// Fix: Use multer.diskStorage to preserve the file extension
-// =========================================================
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
         cb(null, uploadsDir);
@@ -280,6 +280,40 @@ app.post('/api/save-resume', async (req, res) => {
       error: error.message 
     });
   }
+});
+
+// Route to download a CV
+app.post('/api/download-resume', (req, res) => {
+    const resumeData = req.body;
+    const templateName = resumeData.template || 'modern'; // Default to 'modern'
+
+    const templatePath = path.join(templatesDir, `${templateName}.html`);
+
+    if (!fs.existsSync(templatePath)) {
+        return res.status(404).send('Template not found.');
+    }
+
+    // Read the HTML template
+    let templateHTML = fs.readFileSync(templatePath, 'utf8');
+
+    // Simple data replacement
+    templateHTML = templateHTML.replace('{{name}}', resumeData.name || '');
+    templateHTML = templateHTML.replace('{{email}}', resumeData.email || '');
+    templateHTML = templateHTML.replace('{{mobile_number}}', resumeData.mobile_number || '');
+    templateHTML = templateHTML.replace('{{summary}}', resumeData.summary || '');
+    templateHTML = templateHTML.replace('{{skills}}', resumeData.skills || '');
+    
+    // Create the PDF
+    pdf.create(templateHTML, { format: 'A4' }).toStream((err, stream) => {
+        if (err) {
+            console.error('PDF creation error:', err);
+            return res.status(500).send('Failed to generate PDF.');
+        }
+
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${resumeData.name || 'resume'}.pdf"`);
+        stream.pipe(res);
+    });
 });
 
 // Health check endpoint

@@ -207,7 +207,8 @@ function collectFormData() {
         summary: document.getElementById('summary').value,
         skills: document.getElementById('skills').value,
         workExperience,
-        education
+        education,
+        template: document.getElementById('cvTemplate').value
     };
 }
 
@@ -368,6 +369,47 @@ document.getElementById('resumeForm').addEventListener('submit', async (e) => {
         showError('An error occurred while saving the resume. Check console for details.');
     } finally {
         setLoading(saveButton, false);
+    }
+});
+
+// New event listener for the download button
+document.getElementById('downloadCvBtn').addEventListener('click', async () => {
+    const downloadButton = document.getElementById('downloadCvBtn');
+    setLoading(downloadButton, true);
+
+    // Collect all form data, including the new template selection
+    const resumeData = collectFormData();
+    resumeData.template = document.getElementById('cvTemplate').value;
+
+    try {
+        const response = await fetch('http://localhost:3000/api/download-resume', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(resumeData)
+        });
+
+        if (response.ok) {
+            // Create a blob from the response and trigger a download
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${resumeData.name || 'resume'}.pdf`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            showSuccess('CV downloaded successfully!');
+        } else {
+            const errorText = await response.text();
+            throw new Error(errorText);
+        }
+    } catch (error) {
+        console.error('Download error:', error);
+        showError('Failed to download CV. Please try again.');
+    } finally {
+        setLoading(downloadButton, false);
     }
 });
 
