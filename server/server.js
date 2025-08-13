@@ -12,22 +12,23 @@ const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const templatesDir = path.join(__dirname, 'templates');
 
 // Middleware to parse JSON
 app.use(express.json());
 
-// Connect to MongoDB with better error handling
+// Connect to MongoDB
 mongoose.connect('mongodb://localhost:27017/resumeBuilderDB')
   .then(() => console.log('MongoDB connected'))
   .catch(err => console.error('MongoDB connection error:', err));
 
+
 // --- Google Gemini API Setup ---
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY; 
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 if (!GEMINI_API_KEY) {
   console.warn('Warning: GEMINI_API_KEY not found in environment variables');
 }
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+
 
 // Create uploads directory if it doesn't exist
 const uploadsDir = path.join(__dirname, 'uploads');
@@ -38,13 +39,13 @@ if (!fs.existsSync(uploadsDir)) {
 
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
-        cb(null, uploadsDir);
+      cb(null, uploadsDir);
     },
     filename: (req, file, cb) => {
-        // Use a unique name + the original file extension
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        const fileExt = path.extname(file.originalname);
-        cb(null, file.fieldname + '-' + uniqueSuffix + fileExt);
+      // Use a unique name + the original file extension
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      const fileExt = path.extname(file.originalname);
+      cb(null, file.fieldname + '-' + uniqueSuffix + fileExt);
     }
 });
 
@@ -66,10 +67,13 @@ const upload = multer({
   }
 });
 
+
+
 // Serve static files - fix the path
 app.use(express.static(path.join(__dirname, '..', 'public')));
 app.use(express.json({ limit: '10mb' })); // Increased limit
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
 
 // Add CORS headers for development
 app.use((req, res, next) => {
@@ -78,6 +82,7 @@ app.use((req, res, next) => {
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   next();
 });
+
 
 // --- Mongoose Schema ---
 const resumeSchema = new mongoose.Schema({
@@ -92,6 +97,8 @@ const resumeSchema = new mongoose.Schema({
 });
 const Resume = mongoose.model('Resume', resumeSchema);
 
+
+
 // --- API Routes ---
 
 // Route to handle file upload and parsing with enhanced error handling
@@ -100,113 +107,114 @@ app.post('/api/upload-resume', (req, res) => {
 
     // Use multer middleware
     upload.single('resumeFile')(req, res, (err) => {
-        if (err) {
-            console.error('Multer error:', err.message);
-            if (err instanceof multer.MulterError) {
-                if (err.code === 'LIMIT_FILE_SIZE') {
-                    return res.status(400).json({ error: 'File too large. Maximum size is 10MB.' });
-                }
-            }
-            return res.status(400).json({ error: err.message });
+      if (err) {
+        console.error('Multer error:', err.message);
+        if (err instanceof multer.MulterError) {
+          if (err.code === 'LIMIT_FILE_SIZE') {
+            return res.status(400).json({ error: 'File too large. Maximum size is 10MB.' });
+          }
+        }
+        return res.status(400).json({ error: err.message });
+      }
+
+      if (!req.file) {
+        console.error('No file received');
+        return res.status(400).json({ error: 'No file uploaded.' });
+      }
+
+      console.log('File received:', req.file.originalname, req.file.size, 'bytes');
+      const filePath = req.file.path;
+
+      // Check if Python is available
+      const pythonCommand = process.platform === 'win32' ? 'python' : 'python3';
+      const pythonProcess = spawn(pythonCommand, [path.join(__dirname, 'parser.py'), filePath]);
+
+      let dataString = '';
+      let errorString = '';
+
+      pythonProcess.stdout.on('data', (data) => {
+        dataString += data.toString();
+      });
+
+      pythonProcess.stderr.on('data', (data) => {
+        errorString += data.toString();
+        console.error(`Python stderr: ${data}`);
+      });
+
+      pythonProcess.on('error', (error) => {
+        console.error('Failed to start Python process:', error);
+        cleanupFile(filePath);
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Python interpreter not found. Please ensure Python is installed.' });
+        }
+      });
+
+      // Set a timeout for the Python process
+      const timeoutId = setTimeout(() => {
+        if (!pythonProcess.killed) {
+          pythonProcess.kill();
+          console.log('Python process timed out and was killed');
+          if (!res.headersSent) {
+            res.status(500).json({ error: 'Parser timed out. Please try with a smaller file.' });
+          }
+        }
+      }, 30000); // 30 seconds
+
+      pythonProcess.on('close', (code) => {
+        clearTimeout(timeoutId); // Prevent timeout firing after close
+        console.log(`Python process exited with code: ${code}`);
+        cleanupFile(filePath);
+
+        if (res.headersSent) return; // Prevent double response
+
+        if (code !== 0) {
+          console.error(`Python script failed with code ${code}. Error: ${errorString}`);
+          return res.status(500).json({
+            success: false,
+            error: `Parsing failed: ${errorString || 'Unknown error from parser.'}`,
+            details: `Exit code: ${code}`
+          });
         }
 
-        if (!req.file) {
-            console.error('No file received');
-            return res.status(400).json({ error: 'No file uploaded.' });
+        if (!dataString.trim()) {
+          console.error('No data received from Python script');
+          return res.status(500).json({ success: false, error: 'No data received from parser.' });
         }
 
-        console.log('File received:', req.file.originalname, req.file.size, 'bytes');
-        const filePath = req.file.path;
+        try {
+          console.log('Raw Python output:', dataString);
+          const extractedData = JSON.parse(dataString);
+          console.log('Parsed data:', extractedData);
 
-        // Check if Python is available
-        const pythonCommand = process.platform === 'win32' ? 'python' : 'python3';
-        const pythonProcess = spawn(pythonCommand, [path.join(__dirname, 'parser.py'), filePath]);
+          if (extractedData.error) {
+            return res.status(500).json({ success: false, error: extractedData.error });
+          }
 
-        let dataString = '';
-        let errorString = '';
-
-        pythonProcess.stdout.on('data', (data) => {
-            dataString += data.toString();
-        });
-
-        pythonProcess.stderr.on('data', (data) => {
-            errorString += data.toString();
-            console.error(`Python stderr: ${data}`);
-        });
-
-        pythonProcess.on('error', (error) => {
-            console.error('Failed to start Python process:', error);
-            cleanupFile(filePath);
-            if (!res.headersSent) {
-                res.status(500).json({ error: 'Python interpreter not found. Please ensure Python is installed.' });
-            }
-        });
-
-        // Set a timeout for the Python process
-        const timeoutId = setTimeout(() => {
-            if (!pythonProcess.killed) {
-                pythonProcess.kill();
-                console.log('Python process timed out and was killed');
-                if (!res.headersSent) {
-                    res.status(500).json({ error: 'Parser timed out. Please try with a smaller file.' });
-                }
-            }
-        }, 30000); // 30 seconds
-
-        pythonProcess.on('close', (code) => {
-            clearTimeout(timeoutId); // ✅ Prevent timeout firing after close
-            console.log(`Python process exited with code: ${code}`);
-            cleanupFile(filePath);
-
-            if (res.headersSent) return; // ✅ Prevent double response
-
-            if (code !== 0) {
-                console.error(`Python script failed with code ${code}. Error: ${errorString}`);
-                return res.status(500).json({
-                    success: false,
-                    error: `Parsing failed: ${errorString || 'Unknown error from parser.'}`,
-                    details: `Exit code: ${code}`
-                });
-            }
-
-            if (!dataString.trim()) {
-                console.error('No data received from Python script');
-                return res.status(500).json({ success: false, error: 'No data received from parser.' });
-            }
-
-            try {
-                console.log('Raw Python output:', dataString);
-                const extractedData = JSON.parse(dataString);
-                console.log('Parsed data:', extractedData);
-
-                if (extractedData.error) {
-                    return res.status(500).json({ success: false, error: extractedData.error });
-                }
-
-                res.json({ success: true, data: extractedData });
-            } catch (parseError) {
-                console.error('Failed to parse JSON from Python script:', parseError);
-                console.error('Raw output was:', dataString);
-                res.status(500).json({
-                    success: false,
-                    error: 'Invalid data received from parser.',
-                    details: parseError.message,
-                    rawOutput: dataString.substring(0, 500)
-                });
-            }
-        });
+          res.json({ success: true, data: extractedData });
+        } catch (parseError) {
+          console.error('Failed to parse JSON from Python script:', parseError);
+          console.error('Raw output was:', dataString);
+          res.status(500).json({
+            success: false,
+            error: 'Invalid data received from parser.',
+            details: parseError.message,
+            rawOutput: dataString.substring(0, 500)
+          });
+        }
+      });
     });
 });
 
+
 // Helper function to delete temp file
 function cleanupFile(filePath) {
-    fs.unlink(filePath, (unlinkErr) => {
-        if (unlinkErr) {
-            console.error('Error deleting temp file:', unlinkErr);
-        } else {
-            console.log('Temporary file deleted:', filePath);
-        }
-    });
+  fs.unlink(filePath, (unlinkErr) => {
+    if (unlinkErr) {
+      console.error('Error deleting temp file:', unlinkErr);
+    } else {
+      console.log('Temporary file deleted:', filePath);
+    }
+  });
 }
 
 
@@ -218,6 +226,7 @@ app.post('/api/generate-content', async (req, res) => {
     return res.status(500).json({ error: 'AI service not configured. Please set GEMINI_API_KEY.' });
   }
 
+  
   // Use jobTitle and experience if userCareerInfo is not provided (backward compatibility)
   const careerInfo = userCareerInfo || `Job Title: ${jobTitle}, Experience: ${experience}`;
 
@@ -282,29 +291,60 @@ app.post('/api/save-resume', async (req, res) => {
   }
 });
 
+
 // Route to download a CV
 app.post('/api/download-resume', (req, res) => {
     const resumeData = req.body;
-    const templateName = resumeData.template || 'modern'; // Default to 'modern'
 
-    const templatePath = path.join(templatesDir, `${templateName}.html`);
-
-    if (!fs.existsSync(templatePath)) {
-        return res.status(404).send('Template not found.');
-    }
-
-    // Read the HTML template
-    let templateHTML = fs.readFileSync(templatePath, 'utf8');
-
-    // Simple data replacement
-    templateHTML = templateHTML.replace('{{name}}', resumeData.name || '');
-    templateHTML = templateHTML.replace('{{email}}', resumeData.email || '');
-    templateHTML = templateHTML.replace('{{mobile_number}}', resumeData.mobile_number || '');
-    templateHTML = templateHTML.replace('{{summary}}', resumeData.summary || '');
-    templateHTML = templateHTML.replace('{{skills}}', resumeData.skills || '');
+    // Define a simple HTML template string
+    const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 20px; }
+                .container { max-width: 800px; margin: auto; padding: 20px; border: 1px solid #ccc; }
+                h1 { color: #333; }
+                ul { list-style-type: none; padding: 0; }
+                li { margin-bottom: 10px; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>${resumeData.name || 'Resume'}</h1>
+                <p>Email: ${resumeData.email || ''} | Mobile: ${resumeData.mobile_number || ''}</p>
+                
+                <h3>Summary</h3>
+                <p>${resumeData.summary || ''}</p>
+                
+                <h3>Skills</h3>
+                <p>${resumeData.skills || ''}</p>
+                
+                <h3>Work Experience</h3>
+                <ul>
+                    ${(resumeData.workExperience || []).map(exp => `
+                        <li>
+                            <strong>${exp.title || ''}</strong> at ${exp.company || ''}
+                            <p>${exp.description || ''}</p>
+                        </li>
+                    `).join('')}
+                </ul>
+                
+                <h3>Education</h3>
+                <ul>
+                    ${(resumeData.education || []).map(edu => `
+                        <li>
+                            <strong>${edu.degree || ''}</strong> from ${edu.institution || ''}
+                        </li>
+                    `).join('')}
+                </ul>
+            </div>
+        </body>
+        </html>
+    `;
     
-    // Create the PDF
-    pdf.create(templateHTML, { format: 'A4' }).toStream((err, stream) => {
+    // Create the PDF from the HTML string
+    pdf.create(htmlContent, { format: 'A4', border: '10mm' }).toStream((err, stream) => {
         if (err) {
             console.error('PDF creation error:', err);
             return res.status(500).send('Failed to generate PDF.');
@@ -318,8 +358,8 @@ app.post('/api/download-resume', (req, res) => {
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'OK', 
+  res.json({
+    status: 'OK',
     timestamp: new Date().toISOString(),
     uploadsDir: uploadsDir,
     uploadsDirExists: fs.existsSync(uploadsDir)
@@ -334,7 +374,7 @@ app.use((error, req, res, next) => {
 
 // Serve the main HTML file for any non-API routes
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'index.html'));
+  res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
 });
 
 app.listen(PORT, () => {
